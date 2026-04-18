@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timeline Graph from Excel</title>
+    <!-- SheetJS library for reading Excel files -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        :root {
+            --color-bg: #FFFFFF;
+            --color-red: #DC3545;
+            --color-blue: #0066CC;
+            --color-gray-bg: #F0F0F0;
+            --color-axis: #666666;
+            --color-text: #000000;
+            --color-border: #CCCCCC;
+            --color-warning-text: #856404;
+            --color-warning-bg: #FFF3CD;
+            --btn-blue: #007BFF;
+            --btn-gray: #6C757D;
+            --btn-green: #28A745;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background-color: var(--color-bg);
+            color: var(--color-text);
+            margin: 0;
+            padding: 20px;
+        }
+
+        /* Toolbar / UI Header */
+        .toolbar {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        button {
+            border: none;
+            border-radius: 4px;
+            color: #FFFFFF;
+            cursor: pointer;
+            font-size: 14px;
+            width: 140px;
+            height: 40px;
+            transition: filter 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: inherit;
+        }
+
+        button:hover {
+            filter: brightness(0.9);
+        }
+
+        .btn-upload { background-color: var(--btn-blue); position: relative; overflow: hidden; }
+        .btn-demo { background-color: var(--btn-gray); }
+        .btn-export { background-color: var(--btn-green); }
+
+        #fileInput {
+            position: absolute;
+            top: 0; right: 0; margin: 0; padding: 0;
+            font-size: 20px;
+            cursor: pointer;
+            opacity: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        /* Status Area */
+        #statusArea {
+            margin-bottom: 20px;
+        }
+
+        .alert {
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .alert.warning {
+            background-color: var(--color-warning-bg);
+            color: var(--color-warning-text);
+            border: 1px solid #ffeeba;
+            display: block;
+        }
+        
+        .alert.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+        
+        .alert.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+        
+        .loading {
+            display: inline-block;
+            margin-left: 10px;
+            font-size: 14px;
+            color: var(--btn-blue);
+        }
+
+        #fileNameDisplay {
+            font-size: 14px;
+            color: var(--color-axis);
+            margin-left: 10px;
+        }
+
+        /* Canvas Area */
+        #canvasContainer {
+            width: 100%;
+            overflow-x: auto;
+            border-top: 1px solid var(--color-border);
+            padding-top: 20px;
+            text-align: center; /* Center canvas horizontally if smaller than container */
+        }
+
+        canvas {
+            background-color: var(--color-bg);
+            /* Set max-width to ensure it fits screen, logic will control actual internal width based on window width */
+            display: block;
+            margin: 0 auto;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="toolbar">
+        <button class="btn-upload">
+            Upload Excel File
+            <input type="file" id="fileInput" accept=".xlsx, .xls" />
+        </button>
+        <button class="btn-demo" id="btnDemo">Load Demo Data</button>
+        <button class="btn-export" id="btnExport">Export to PNG</button>
+        <span id="fileNameDisplay"></span>
+        <span id="loadingIndicator" class="loading" style="display: none;">Processing...</span>
+    </div>
+
+    <div id="statusArea"></div>
+
+    <div id="canvasContainer">
+        <canvas id="timelineCanvas" width="1000" height="400"></canvas>
+    </div>
+
+    <script>
+        // =====================================================================
+        // SECTION 1: CONFIGURATION & CONSTANTS
+        // =====================================================================
+        
+        const MAX_EVENTS_PER_LINE = 6;
+        const NEGATIVE_KEYWORDS = [
+            'scrap', 'loss', 'block', 'broken', 'reject', 
+            'rejected', 'blocked', 'damage', 'damaged', 
+            'fail', 'failed', 'failure', 'stop', 'stopped', 
+            'waste', 'delay', 'delayed', 'downtime', 'breakdown'
+        ];
+
+        // Demo Data
+        const DEMO_DATA = [
+            {"Date": "2024-04-01", "Time": "08:15", "Event": "Sensor calibration issue", "Impact": "15 mins delay", "By Whom": "Alice Walker"},
+            {"Date": "4/1/2024", "Time": "10:30 AM", "Event": "Conveyor jam", "Impact": "Blocked belt, 50 pcs rejected", "By Whom": "Bob Builder"},
+            {"Date": "02/04/2024", "Time": "14:00", "Event": "Routine maintenance", "Impact": "System checked, all good", "By Whom": "Charlie M."},
+            {"Date": "2024-04-03", "Time": "9:00", "Event": "Motor failure", "Impact": "Complete breakdown, 3 hours downtime", "By Whom": "Alice Walker"},
+            {"Date": "Apr 4 2024", "Time": "11:20", "Event": "Pneumatic valve replaced", "Impact": "No production impact", "By Whom": "Dave Tech"},
+            {"Date": "2024-04-05", "Time": "16:45", "Event": "Power surge", "Impact": "Scrap 20 units", "By Whom": "Eve Manager"},
+            {"Date": "2024-04-05", "Time": "18:20", "Event": "Bearing replaced", "Impact": "Line restarted", "By Whom": "Eve Manager"},
+            {"Date": "04-06-2024", "Time": "", "Event": "Software update", "Impact": "Installed v2.1", "By Whom": "IT Dept"}
+        ];
+
+        let currentEvents = []; // The processed events array
+        let resizeTimer;
+
+        // UI Elements
+        const fileInput = document.getElementById('fileInput');
+        const btnDemo = document.getElementById('btnDemo');
+        const btnExport = document.getElementById('btnExport');
+        const fileNameDisplay = document.getElementById('fileNameDisplay');
+        const statusArea = document.getElementById('statusArea');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const canvas = document.getElementById('timelineCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // =====================================================================
+        // SECTION 2: FILE HANDLING & EXCEL PARSING
+        // =====================================================================
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            fileNameDisplay.textContent = file.name;
+            loadingIndicator.style.display = 'inline-block';
+            clearStatus();
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array', cellDates: true});
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const jsonRows = XLSX.utils.sheet_to_json(worksheet, {raw: false}); // raw: false gets formatted strings
+                    
+                    processExcelData(jsonRows);
+                } catch (err) {
+                    showStatus('Error reading Excel file: ' + err.message, 'error');
+                } finally {
+                    loadingIndicator.style.display = 'none';
+                    fileInput.value = ''; // Reset input
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        btnDemo.addEventListener('click', () => {
+            fileNameDisplay.textContent = 'Demo Dataset';
+            clearStatus();
+            // Deep copy to prevent mutation
+            processExcelData(JSON.parse(JSON.stringify(DEMO_DATA))); 
+        });
+
+        function clearStatus() {
+            statusArea.innerHTML = '';
+        }
+
+        function showStatus(message, type) {
+            const div = document.createElement('div');
+            div.className = `alert ${type}`;
+            div.textContent = message;
+            statusArea.appendChild(div);
+        }
+
+        function extractByKeyPattern(obj, pattern) {
+            for (let key in obj) {
+                if (key.trim().toLowerCase() === pattern.toLowerCase()) {
+                    return obj[key];
+                }
+            }
+            return undefined;
+        }
+
+        // =====================================================================
+        // SECTION 3: DATA PROCESSING & FORMAT DETECTION
+        // =====================================================================
+
+        function processExcelData(dataRows) {
+            if (!dataRows || dataRows.length === 0) {
+                showStatus('The file appears to be empty.', 'error');
+                return;
+            }
+
+            // FR-1.5 Parse columns by header name matching
+            const requiredHeaders = ['Date', 'Time', 'Event', 'Impact', 'By Whom'];
+            
+            // Check for missing headers from first row
+            const firstRowHeaders = Object.keys(dataRows[0]).map(k => k.trim().toLowerCase());
+            const missingHeaders = requiredHeaders.filter(h => !firstRowHeaders.includes(h.toLowerCase()));
+            
+            if (missingHeaders.length > 0) {
+                showStatus(`Missing required columns: ${missingHeaders.join(', ')}`, 'error');
+                return;
+            }
+
+            let validEvents = [];
+            let skippedRows = [];
+            
+            // Pre-scan Date format for ambiguity (EU vs US)
+            let dateAssumption = '';
+            let isDayFirst = false; // true = DD/MM/YYYY, false = MM/DD/YYYY
+            
+            let ambiguousDates = [];
+            let resolvedOrder = null;
+            
+            for (let i = 0; i < dataRows.length; i++) {
+                let dText = String(extractByKeyPattern(dataRows[i], 'Date') || '').trim();
+                if(!dText) continue;
+                
+                // Matches DD/MM or MM/DD followed by YY or YYYY
+                const parts = dText.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/);
+                if (parts) {
+                    let p1 = parseInt(parts[1], 10);
+                    let p2 = parseInt(parts[2], 10);
+                    
+                    if (p1 > 12 && p2 <= 12) {
+                        resolvedOrder = 'DD/MM';
+                        break;
+                    } else if (p2 > 12 && p1 <= 12) {
+                        resolvedOrder = 'MM/DD';
+                        break;
+                    } else {
+                        ambiguousDates.push(dText);
+                    }
+                }
+            }
+            
+            if (resolvedOrder === 'DD/MM') {
+                isDayFirst = true;
+            } else if (resolvedOrder === 'MM/DD') {
+                isDayFirst = false;
+            } else if (ambiguousDates.length > 0) {
+                // If ambiguous, default to MM/DD/YYYY and show notice
+                isDayFirst = false;
+                dateAssumption = "Date format assumed as MM/DD/YYYY. If incorrect, please reformat your Excel dates.";
+            }
+
+            // Process each row
+            dataRows.forEach((row, index) => {
+                const rowNum = index + 2; // +1 for 0-index, +1 for header
+                
+                const rawDate = extractByKeyPattern(row, 'Date');
+                const rawTime = extractByKeyPattern(row, 'Time');
+                const eventDesc = extractByKeyPattern(row, 'Event');
+                const impactText = extractByKeyPattern(row, 'Impact') || '';
+                const byWhom = extractByKeyPattern(row, 'By Whom') || '';
+                
+                if(!rawDate || !eventDesc) {
+                    skippedRows.push(rowNum);
+                    return;
+                }
+
+                // Parse Date
+                let parsedDate = parseDateString(String(rawDate).trim(), isDayFirst);
+                if (!parsedDate) {
+                    skippedRows.push(rowNum);
+                    return;
+                }
+                
+                // Parse Time
+                let timeStr = "00:00";
+                let timeMissing = true;
+                if (rawTime !== undefined && String(rawTime).trim() !== '') {
+                    let parsedTime = parseTimeString(String(rawTime).trim());
+                    if (parsedTime) {
+                        timeStr = parsedTime;
+                        timeMissing = false;
+                    } else {
+                        // Skip row if time exists but cannot be parsed
+                        skippedRows.push(rowNum);
+                        return;
+                    }
+                }
+                
+                // Construct Date object for sorting
+                const dtString = `${parsedDate}T${timeStr}:00Z`;
+                const sortDate = new Date(dtString);
+                
+                // Negative word detection for Impact field
+                const impactLower = String(impactText).toLowerCase();
+                const hasNegativeWord = NEGATIVE_KEYWORDS.some(kw => impactLower.includes(kw));
+                
+                validEvents.push({
+                    rowNum: rowNum,
+                    dateStr: parsedDate,
+                    timeStr: timeStr,
+                    isTimeMissing: timeMissing,
+                    timestamp: sortDate.getTime(),
+                    event: String(eventDesc),
+                    impact: String(impactText),
+                    byWhom: String(byWhom),
+                    hasNegativeWord: hasNegativeWord
+                });
+            });
+
+            if (validEvents.length === 0) {
+                showStatus('No valid events could be parsed from the file.', 'error');
+                return;
+            }
+
+            // Sort chronologically
+            validEvents.sort((a, b) => a.timestamp - b.timestamp);
+
+            // Display statuses
+            if (dateAssumption) {
+                showStatus(dateAssumption, 'warning');
+            }
+            if (skippedRows.length > 0) {
+                showStatus(`${skippedRows.length} rows skipped due to unreadable or missing date/time values (e.g. row ${skippedRows.slice(0,5).join(', ')}).`, 'warning');
+            }
+            showStatus(`Successfully imported ${validEvents.length} events.`, 'success');
+
+            currentEvents = validEvents;
+            renderTimeline();
+        }
+
+        // Parse Date string returning YYYY-MM-DD or null
+        function parseDateString(d, isDayFirst) {
+            // Already standard format?
+            if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+                // If it's something like 2024-04-01 already
+                return d;
+            }
+
+            // Text month: Jan 15 2024 / 15 Jan 2024
+            const textMonth = new Date(d);
+            if (!isNaN(textMonth.getTime())) {
+                const mo = String(textMonth.getMonth() + 1).padStart(2, '0');
+                const da = String(textMonth.getDate()).padStart(2, '0');
+                const ye = textMonth.getFullYear();
+                if (ye > 1900 && ye < 2100) return `${ye}-${mo}-${da}`;
+            }
+
+            // Numeric pattern DD/MM/YYYY or MM/DD/YYYY
+            const parts = d.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/);
+            if (parts) {
+                let p1 = parseInt(parts[1], 10);
+                let p2 = parseInt(parts[2], 10);
+                let ye = parseInt(parts[3], 10);
+                if (ye < 100) { ye += 2000; } // lazy short year
+
+                let da, mo;
+                if (isDayFirst) {
+                    da = p1; mo = p2;
+                } else {
+                    da = p2; mo = p1;
+                }
+
+                // If inference failed and format is impossible, swap
+                if (mo > 12 && da <= 12) {
+                    let tmp = da; da = mo; mo = tmp;
+                }
+
+                if (mo <= 12 && mo >= 1 && da <= 31 && da >= 1) {
+                    return `${ye}-${String(mo).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
+                }
+            }
+            return null;
+        }
+
+        // Parse Time string returning HH:MM or null
+        function parseTimeString(t) {
+            t = t.toLowerCase().trim();
+            // Handle fractional days (Excel serial) -- extremely unlikely due to SheetJS raw:false but just in case
+            if (!isNaN(parseFloat(t)) && parseFloat(t) < 1 && t.includes('.')) {
+                const totalMins = Math.round(parseFloat(t) * 24 * 60);
+                const h = Math.floor(totalMins / 60);
+                const m = totalMins % 60;
+                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            }
+
+            // 12 hour or 24 hour via regex
+            const match = t.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?$/);
+            if (match) {
+                let hh = parseInt(match[1], 10);
+                const mm = match[2];
+                const ampm = match[3];
+
+                if (ampm === 'pm' && hh < 12) hh += 12;
+                if (ampm === 'am' && hh === 12) hh = 0;
+
+                if (hh >= 0 && hh <= 23 && parseInt(mm) >= 0 && parseInt(mm) <= 59) {
+                    return `${String(hh).padStart(2, '0')}:${mm}`;
+                }
+            }
+            // Some formats might be parsed by standard Date
+            const dummyDateStr = "1970-01-01 " + t;
+            const parsedTimeD = new Date(dummyDateStr);
+            if (!isNaN(parsedTimeD.getTime())) {
+                return `${String(parsedTimeD.getHours()).padStart(2, '0')}:${String(parsedTimeD.getMinutes()).padStart(2, '0')}`;
+            }
+
+            return null;
+        }
+
+
+        // =====================================================================
+        // SECTION 4: CANVAS RENDERING ENGINE
+        // =====================================================================
+
+        function renderTimeline() {
+            if (currentEvents.length === 0) return;
+
+            const events = currentEvents;
+            const numLines = Math.ceil(events.length / MAX_EVENTS_PER_LINE);
+            
+            // Adjust canvas properties based on container width
+            const containerWidth = document.getElementById('canvasContainer').clientWidth;
+            const width = Math.max(containerWidth, 800); // Minimum 800px width
+            
+            // Compute vertical metrics per line
+            const lineSpacing = 350; // Vertical space allocated per horizontal line 
+            const topPadding = 50;
+            const height = topPadding + (numLines * lineSpacing);
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            // Clear entire canvas with background color (FR-5.1)
+            ctx.fillStyle = "#FFFFFF";
+            ctx.fillRect(0, 0, width, height);
+            
+            // Text properties
+            ctx.textBaseline = "middle";
+
+            const sidePadding = 100; // Increased padding to prevent edge cards from being cut off
+            const drawableWidth = width - (sidePadding * 2);
+
+            // Compute global spacing grid so all items align left correctly across lines
+            const maxItemsForSpacing = Math.min(events.length, MAX_EVENTS_PER_LINE);
+            const globalSegmentWidth = maxItemsForSpacing > 1 ? drawableWidth / (maxItemsForSpacing - 1) : 0;
+
+            for (let i = 0; i < numLines; i++) {
+                const lineEvents = events.slice(i * MAX_EVENTS_PER_LINE, (i + 1) * MAX_EVENTS_PER_LINE);
+                
+                const currentY = topPadding + (i * lineSpacing) + 50; // Y coordinate of the axis line
+                
+                // Draw Timeline Axis Line
+                ctx.beginPath();
+                ctx.strokeStyle = "#666666";
+                ctx.lineWidth = 2;
+                ctx.moveTo(0, currentY); // Line extends fully to left edge
+                ctx.lineTo(width, currentY); // Line extends fully to right edge
+                ctx.stroke();
+                
+                for (let j = 0; j < lineEvents.length; j++) {
+                    const evt = lineEvents[j];
+                    // Items align to their fixed grid column starting from the left
+                    const currentX = sidePadding + (j * globalSegmentWidth);
+                    
+                    drawEventMarkerAndCard(evt, currentX, currentY);
+                }
+            }
+        }
+
+        function drawEventMarkerAndCard(evt, x, y) {
+            const connectorLen = 20;
+
+            // 1. Date and Time label (ABOVE the axis line)
+            ctx.fillStyle = "#000000";
+            ctx.font = "14px Arial";
+            ctx.textAlign = "center";
+            const dateStr = evt.dateStr;
+            const timeStr = evt.isTimeMissing ? "(--:--)" : evt.timeStr;
+            const fullDateTimeLabel = `${dateStr}  ${timeStr}`;
+            
+            // Draw text 25px above the axis
+            ctx.fillText(fullDateTimeLabel, x, y - 25);
+            // If time is missing, draw a small warning triangle
+            if(evt.isTimeMissing) {
+                const metrics = ctx.measureText(fullDateTimeLabel);
+                drawWarningIcon(x + (metrics.width/2) + 12, y - 25);
+            }
+
+            // 2. Connector line DOWNWARD
+            ctx.beginPath();
+            ctx.strokeStyle = "#666666";
+            ctx.lineWidth = 1.5;
+            ctx.moveTo(x, y);
+            ctx.lineTo(x, y + connectorLen);
+            ctx.stroke();
+
+            // 3. Marker Dot (ON the axis)
+            ctx.beginPath();
+            const markerColor = evt.hasNegativeWord ? "#DC3545" : "#0066CC";
+            ctx.fillStyle = markerColor;
+            ctx.arc(x, y, 6, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // 4. Info Card (BELOW the marker)
+            const cardY = y + connectorLen;
+            const cardWidth = 160;
+            const cardPadding = 10;
+            
+            ctx.font = "12px Arial";
+            ctx.textAlign = "left";
+
+            // Word Wrapping logic for Event and By Whom texts
+            const evtLines = wrapTextAndMeasure(ctx, `Event: ${evt.event}`, cardWidth - cardPadding*2);
+            const whomLines = wrapTextAndMeasure(ctx, `By Whom: ${evt.byWhom}`, cardWidth - cardPadding*2);
+            
+            // Impact section is special
+            const impactLines = wrapTextAndMeasure(ctx, `Impact: ${evt.impact}`, cardWidth - cardPadding*2 - 8); // slightly smaller inside its box
+            
+            // Calculate total card height based on text content
+            const lineH = 16;
+            const evtHeight = evtLines.length * lineH;
+            const impactTopMargin = 8;
+            const impactBoxTopPadding = 4;
+            const impactBoxBotPadding = 4;
+            const impactHeight = (impactLines.length * lineH) + impactBoxTopPadding + impactBoxBotPadding;
+            const whomTopMargin = 8;
+            const whomHeight = whomLines.length * lineH;
+            
+            const totalCardHeight = cardPadding + evtHeight + impactTopMargin + impactHeight + whomTopMargin + whomHeight + cardPadding;
+
+            // Draw outer card background
+            const cardX = x - (cardWidth / 2);
+            ctx.fillStyle = "#FFFFFF";
+            ctx.strokeStyle = "#CCCCCC";
+            ctx.lineWidth = 1;
+            drawRoundRect(ctx, cardX, cardY, cardWidth, totalCardHeight, 4, true, true);
+
+            // Draw Event text
+            ctx.fillStyle = "#000000";
+            let cursorY = cardY + cardPadding + (lineH / 2);
+            evtLines.forEach(line => {
+                ctx.fillText(line, cardX + cardPadding, cursorY);
+                cursorY += lineH;
+            });
+
+            // Draw Impact Box
+            cursorY += impactTopMargin - (lineH / 2);
+            const impactBoxX = cardX + 4; // slight indent inner box
+            const impactBoxW = cardWidth - 8;
+            ctx.fillStyle = evt.hasNegativeWord ? "#DC3545" : "#F0F0F0";
+            ctx.strokeStyle = evt.hasNegativeWord ? "#DC3545" : "#CCCCCC";
+            // round rect for impact box
+            drawRoundRect(ctx, impactBoxX, cursorY, impactBoxW, impactHeight, 2, true, true);
+            
+            // Impact Text
+            ctx.fillStyle = evt.hasNegativeWord ? "#FFFFFF" : "#000000";
+            let impactTextY = cursorY + impactBoxTopPadding + (lineH / 2);
+            impactLines.forEach(line => {
+                ctx.fillText(line, impactBoxX + 4, impactTextY);
+                impactTextY += lineH;
+            });
+
+            // Draw By Whom
+            cursorY += impactHeight + whomTopMargin;
+            ctx.fillStyle = "#000000";
+            let whomY = cursorY + (lineH / 2);
+            whomLines.forEach(line => {
+                ctx.fillText(line, cardX + cardPadding, whomY);
+                whomY += lineH;
+            });
+        }
+
+        // Helper function for wrapping text
+        function wrapTextAndMeasure(context, text, maxWidth) {
+            const words = text.split(" ");
+            const lines = [];
+            let currentLine = words[0] || "";
+
+            for (let i = 1; i < words.length; i++) {
+                const word = words[i];
+                const width = context.measureText(currentLine + " " + word).width;
+                if (width < maxWidth) {
+                    currentLine += " " + word;
+                } else {
+                    lines.push(currentLine);
+                    currentLine = word;
+                }
+            }
+            lines.push(currentLine);
+            return lines;
+        }
+
+        // Helper to draw rounded rectangle
+        function drawRoundRect(ctx, x, y, width, height, radius, fill, stroke) {
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + width - radius, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+            ctx.lineTo(x + radius, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+            if (fill)   ctx.fill();
+            if (stroke) ctx.stroke();
+        }
+
+        // Warning Icon helper
+        function drawWarningIcon(x, y) {
+            // Triangle
+            ctx.beginPath();
+            ctx.fillStyle = "#FFC107"; // Amber
+            const h = 14, w = 14;
+            ctx.moveTo(x, y - (h/2));
+            ctx.lineTo(x + (w/2), y + (h/2));
+            ctx.lineTo(x - (w/2), y + (h/2));
+            ctx.fill();
+
+            // Exclamation mark
+            ctx.fillStyle = "#000";
+            ctx.font = "bold 10px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText("!", x, y + 2);
+        }
+
+        // =====================================================================
+        // SECTION 5: RESPONSIVE & EXPORT
+        // =====================================================================
+
+        // Resize behavior (FR-6.2 debounce display update)
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                if (currentEvents.length > 0) {
+                    renderTimeline();
+                }
+            }, 300);
+        });
+
+        // Export functionality (FR-7)
+        btnExport.addEventListener('click', () => {
+            if (currentEvents.length === 0) {
+                alert("Nothing to export. Please load data first.");
+                return;
+            }
+            
+            canvas.toBlob(function(blob) {
+                // Formatting Date string for filename
+                const d = new Date();
+                const pad = n => String(n).padStart(2,'0');
+                const dtStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+                const filename = `timeline_${dtStr}.png`;
+
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.style.display = "none";
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                
+                // Cleanup
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }, 100);
+            }, 'image/png');
+        });
+
+    </script>
+</body>
+</html>
